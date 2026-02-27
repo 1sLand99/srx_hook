@@ -1,0 +1,16 @@
+[package]
+name = "srx_hook"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+libc = "^0.2"
+once_cell = "^1.19"
+regex = "^1.10"
+
+[workspace]
+members = ["hook_test"]
+resolver = "2"

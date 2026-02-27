@@ -1,0 +1,154 @@
+name: 可行性验证
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  NDK_VERSION: r29
+  REMOTE_DIR: /data/local/tmp/srx_hook_test
+
+jobs:
+  check:
+    name: 编译与静态检查
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [aarch64-linux-android, x86_64-linux-android]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: 配置 Cargo 链接器
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.aarch64-linux-android]
+          linker = "aarch64-linux-android35-clang"
+
+          [target.x86_64-linux-android]
+          linker = "x86_64-linux-android35-clang"
+          EOF
+
+      - name: 添加 NDK 工具链到 PATH
+        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: Clippy
+        run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+
+      - name: 构建（Release）
+        run: cargo build --target ${{ matrix.target }} --release
+
+  short-test:
+    name: 短时验证（x86_64 模拟器）
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: 配置 Cargo 链接器
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.x86_64-linux-android]
+          linker = "x86_64-linux-android35-clang"
+          EOF
+
+      - name: 添加 NDK 工具链到 PATH
+        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: 构建 hook_test
+        run: cargo build --manifest-path hook_test/Cargo.toml --target x86_64-linux-android --release
+
+      - name: 启用 KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 运行短时验证
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb shell mkdir -p ${{ env.REMOTE_DIR }}
+            adb push target/x86_64-linux-android/release/hook_test ${{ env.REMOTE_DIR }}/
+            adb push target/x86_64-linux-android/release/libhook_test.so ${{ env.REMOTE_DIR }}/
+            adb shell chmod 755 ${{ env.REMOTE_DIR }}/hook_test
+            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=120 HOOK_TEST_MARATHON_REPORT_STEP=30 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=60 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=20 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=1 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=24 HOOK_TEST_CONCURRENT_WORKERS=16 HOOK_TEST_CONCURRENT_CALLS=16 HOOK_TEST_CONCURRENT_ROUNDS=16 HOOK_TEST_PERSISTENT_WORKERS=12 HOOK_TEST_PERSISTENT_CALLS=48 HOOK_TEST_LEAK_ROUNDS=64 ./hook_test" 2>&1 | tee /tmp/hook_test_output.txt
+            grep -q "hook_test all scenarios passed" /tmp/hook_test_output.txt && echo "通过：短时验证" || { echo "失败：未找到通过标记"; exit 1; }
+
+  medium-test:
+    name: 中时验证（x86_64 模拟器）
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: 配置 Cargo 链接器
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.x86_64-linux-android]
+          linker = "x86_64-linux-android35-clang"
+          EOF
+
+      - name: 添加 NDK 工具链到 PATH
+        run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: 构建 hook_test
+        run: cargo build --manifest-path hook_test/Cargo.toml --target x86_64-linux-android --release
+
+      - name: 启用 KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 运行中时验证
+        timeout-minutes: 30
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb shell mkdir -p ${{ env.REMOTE_DIR }}
+            adb push target/x86_64-linux-android/release/hook_test ${{ env.REMOTE_DIR }}/
+            adb push target/x86_64-linux-android/release/libhook_test.so ${{ env.REMOTE_DIR }}/
+            adb shell chmod 755 ${{ env.REMOTE_DIR }}/hook_test
+            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=1200 HOOK_TEST_MARATHON_REPORT_STEP=200 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=600 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=100 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=3 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=120 HOOK_TEST_CONCURRENT_WORKERS=48 HOOK_TEST_CONCURRENT_CALLS=48 HOOK_TEST_CONCURRENT_ROUNDS=48 HOOK_TEST_PERSISTENT_WORKERS=24 HOOK_TEST_PERSISTENT_CALLS=128 HOOK_TEST_LEAK_ROUNDS=320 ./hook_test" 2>&1 | tee /tmp/hook_test_output.txt
+            grep -q "hook_test all scenarios passed" /tmp/hook_test_output.txt && echo "通过：中时验证" || { echo "失败：未找到通过标记"; exit 1; }

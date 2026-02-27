@@ -1,0 +1,10 @@
+[package]
+name = "hook_test"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+srx_hook = { path = ".." }
+libc = "^0.2"

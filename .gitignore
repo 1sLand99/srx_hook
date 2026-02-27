@@ -1,0 +1,19 @@
+/target
+/soak-logs
+*.lock
+# AI 助手
+.codex/
+.claude/
+.cursor/
+.aider*
+.continue/
+.codeium/
+.sourcegraph/
+.tabnine/
+CLAUDE.md
+CURSOR.md
+AGENTS.md
+.cursorrules
+.clinerules
+copilot-instructions.md
+srx_hook.code-workspace
