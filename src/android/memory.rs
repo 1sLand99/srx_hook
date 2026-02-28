@@ -13,8 +13,9 @@ pub const PROT_EXEC_FLAG: u32 = 0x4;
 // 查询指定地址范围的内存保护属性
 // pathname 可选，用于加速 maps 行过滤；不匹配时回退纯地址查找
 pub fn get_mem_protect(addr: usize, len: usize, pathname: Option<&str>) -> Result<u32, Errno> {
-    if pathname.is_some()
-        && let Ok(prot) = scan_maps_for_protect(addr, len, pathname)
+    let effective_path = pathname.map(normalize_maps_pathname);
+    if effective_path.is_some()
+        && let Ok(prot) = scan_maps_for_protect(addr, len, effective_path)
     {
         return Ok(prot);
     }
@@ -224,4 +225,12 @@ fn cache_line_size() -> (usize, usize) {
 fn align_down(addr: usize, align: usize) -> usize {
     let mask = !(align.saturating_sub(1));
     addr & mask
+}
+
+// APK 内嵌 .so 的 pathname 含 "!/" 分隔符，maps 中仅记录 APK 路径
+fn normalize_maps_pathname(pathname: &str) -> &str {
+    match pathname.find("!/") {
+        Some(idx) => &pathname[..idx],
+        None => pathname,
+    }
 }
